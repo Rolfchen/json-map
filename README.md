@@ -14,6 +14,20 @@ Simply pull **jsonMap.py** from the source code, place it in your project and re
 ## Usage ##
 To use it, instanciatiate a **Mapper** object using the JSON-Mapping-Schema and call the transform function on the JSON object to transform. The transform() method takes in a Dictionary or JSON string as parameter. Full documentation is still to come and will be updated when project is more stable. 
 
+i.e.
+```
+import json
+from jsonMap import Mapper
+
+original=open("Original-Json.js", "r")
+schema_json=open("Schema-Json.js", "r")
+schema=Mapper(json.load(schema_json))
+result=schema.transform(json.load(original)) # Returns a JSON Object
+
+# to output the result
+json.dumps(td)
+```
+
 ## JSON-Mapping-Schema ##
 The JSON Mapping Schema is based on JSON-Schema (http://json-schema.org/) with additional properties to achieve various methods of transforms. A Mapping Schema looks like this: 
 ```
