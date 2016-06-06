@@ -22,8 +22,11 @@ from datetime import datetime
 # External Libraries
 from jsonpointer import resolve_pointer
 import requests
+import dateutil.parser
 
 class Mapper:
+	#CONSTANTS
+	# type checks
 	OBJTYPES={
 		"string": str, 
 		"object": dict,
@@ -32,7 +35,7 @@ class Mapper:
 		"float": float, 
 		"date": datetime
 	}
-	#CONSTANTS
+
 	# condition operators
 	OPERATORS={
 		"$ne": lambda x,y: x != y,
@@ -41,6 +44,7 @@ class Mapper:
 		"$gt": lambda x,y: x > y, 
 		"$lt": lambda x,y: x < y
 	}
+	#CONSTRUCTOR
 	def __init__(self, schema={}, root_doc=None):
 		if schema == None:
 			return None
@@ -77,8 +81,10 @@ class Mapper:
 			self.items=None
 			if "items" in self.json:
 				self.items=Mapper(self.json["items"], self.root_doc)
-			# TODO
-
+			# Child (for key map)
+			self.child=None
+			if "child" in self.json:
+				self.child=Mapper(self.json["child"], self.root_doc)
 			# Conditions
 			self.conditions=self.json.get("conditions", {})
 			# Options
@@ -97,7 +103,7 @@ class Mapper:
 				ref_doc=f.read()
 		reference=resolve_pointer(ref_doc, path_segment[0])
 		return reference
-
+	# Test the "subject" based on the condition. 
 	def isWorthy(self,subject):
 		outcome=True
 		if "OR" in self.conditions:
@@ -108,7 +114,7 @@ class Mapper:
 					break
 		outcome=self.conditionTest(self.conditions, subject)
 		return outcome
-
+	# Testing the conditions. 
 	def conditionTest(self, condition_list, subject):
 		outcome=True
 		## Check conditions first. 
@@ -128,45 +134,60 @@ class Mapper:
 					outcome= False
 		return outcome
 
+	# Operations when "Key_map" is used. 
 	def key_map(self, subject):
 		new_subject={}
 		for subject_member in subject: # Subject must be a list of dictionary obj
 			m_key=get_element_from_path(self.options["KEY_MAP"], subject_member)
 			if m_key is not None:
-				## Transform and add
-				new_subject_member={}
-				for skey,sitem in self.properties.items():
-					new_item=sitem.transform(subject_member)
-					if not is_empty(new_item):
-						new_subject_member[skey]=new_item
-				if not is_empty(new_subject_member):
-					new_subject[m_key]=new_subject_member
+				if self.child is not None:
+					if self.child.type == "array":
+						new_item=self.child.items.transform(subject_member)
+						if new_item is not None:
+							try:
+								new_subject[m_key].append(new_item)
+							except KeyError as ke:
+								new_subject[m_key]=[]
+								new_subject[m_key].append(new_item)
+					elif self.child.type == "object":
+						new_item=self.child.transform(subject_member)
+						if new_item is not None:
+							new_subject[m_key]=new_item
 		return new_subject
 
+	# The main "Transform" method that transform the subject. 
 	def transform(self, subject, sub_parent=None):
-		transformed=subject # Set to none mapped version
+		transformed=subject # Set to non mapped version
 		## VALUE
-		if self.value != None:
+		if self.value is not None:
 			transformed=self.value
 		## MAP
 		if sub_parent==None:
 			sub_parent=subject # if none, make it self.
-		if self.map != "":
+		if self.map =="" and self.value is None:
+			transformed={} if self.type=="object" else []
+		elif self.map != "":
 			if isinstance(self.map, list): # ARRAY! item aggregation
 				aggregated_transform=[]
 				priorities=self.options.get("PRIORITY", [])
 				prioritised=[]
 				for map_bits in self.map:
 					new_bit=get_element_from_path(map_bits, subject, sub_parent)
+					# if self.type=="date":
+					# 	print(new_bit)
 					if not is_empty(new_bit):
 						if map_bits in priorities:
 							prioritised.append(new_bit)
-							aggregated_transform.append(new_bit)
+						aggregated_transform.append(new_bit)
 				if len(prioritised) > 0:
 					aggregated_transform=prioritised
 				# TODO!! MAKE TYPES MORE GENERIC
-				if self.type=="string":
-					transformed=" ".join(aggregated_transform)
+				if self.type=="string" or self.type=="date":
+					delimiter=self.options.get("DELIMITER", " ")
+					transformed=delimiter.join(aggregated_transform)
+					# if self.type=="date":
+					# 	print("Aggregated: "+ str(transformed))
+					# 	print(aggregated_transform)
 				elif self.type=="array":
 					if self.json.get("item_type", None) == "float":
 						for a_item in aggregated_transform:
@@ -188,7 +209,7 @@ class Mapper:
 					transformed=self.key_map(transformed)
 				if "GET_ONE" in self.options:
 					transformed=transformed[0]
-			## ITEMS
+		## ITEMS
 			if not is_empty(self.items) and not is_empty(transformed):
 				new_transform=[]
 				for trans_item in transformed:
@@ -196,24 +217,29 @@ class Mapper:
 					if not is_empty(new_trans_item):
 						new_transform.append(new_trans_item)
 				transformed=new_transform if len(new_transform) > 0 else None
-
 		## PROPERTIES only for objects. NOTE: KeyMapped objects are different. 
 		elif not is_empty(self.properties):
 			new_transform={}
 			for tkey, titem in self.properties.items():
-				new_item=titem.transform(transformed, sub_parent)
+				new_item=titem.transform(subject, sub_parent)
 				if not is_empty(new_item):
 					new_transform[tkey]=new_item
-			transformed=new_transform if not is_empty(new_transform) else None
-		
+			if not is_empty(new_transform):
+				transformed=new_transform
+		## ENUM_MAP
+		elif isinstance(transformed, str):
+			transformed = transformed.strip(' \t\n\r')
+			if "enum_map" in self.json:
+				try:
+					transformed=self.json["enum_map"][transformed]
+				except KeyError as ke:
+					pass
 		## FINALLY, convert type if it wasn't converted. 
-		if not isinstance(subject, self.class_type):
-			self.convert(subject)
+		if not isinstance(transformed, self.class_type):
+			transformed = self.convert(transformed)
 		return transformed
 
 	def convert(self, subject):
-		dtf= "%Y-%m-%dT%H%M%S"
-		df="%Y-%m-%d"
 		_simple_types=["string", "int", "float"]
 		#_complext_types=["object", "array"]
 		converted=subject
@@ -223,26 +249,11 @@ class Mapper:
 				ld=list(converted.values())
 				converted=ld[0]
 			# Reduce as the first item for lists
-			while isinstance(converted, list):
+			while isinstance(converted, list) and len(converted) > 0:
 				converted=converted[0]
-			#converted=self.class_type(converted)
-		#elif self.type == "date" and isinstance(converted, str):
-			#remove timezone.
-
-			# try:
-			# 	converted=datetime.strptime(converted, df)
-			# except TypeError as te:
-			# 	pass
-			# except AttributeError as ae:
-			# 	pass
-			# except ValueError as ve:
-			# 	try:
-			# 		date_parts=converted.split("+")
-			# 		converted=datetime.strptime(date_parts[0], dtf)
-			# 	except ValueError as vve:
-			# 		pass
+		elif self.type == "date" and isinstance(converted, str) and converted != "":
+			converted=dateutil.parser.parse(converted)
 		return converted
-		### TODO: IGNORE DICTIONARY TO ARRAY For NOW
 
 class TransformSchema(Mapper):
 	def __init__(self, schema={}, root_doc=None):
@@ -253,7 +264,9 @@ class TransformSchema(Mapper):
 		self.schema_type=schema.get("$schema", "http://schemas.dataestate.net/v2/mapping-schema")
 		self.version=schema.get("schema_version",2)
 		self.definitions=schema.get("definitions", {})
-	
+
+## Static Module Classes
+# Check if object is empty
 def is_empty(obj):
 	if obj is None:
 		return True
@@ -265,6 +278,7 @@ def is_empty(obj):
 		return True
 	return False
 
+# Get element using a json dot path. 
 def get_element_from_path(dot_path="", doc=None, parent=None):
 	paths=dot_path.split(".")
 	if len(paths) <= 0:
